@@ -107,3 +107,5 @@ textarea { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px
 }
 .toast.show { opacity: 1; transform: none; }
 .toast.error { background: var(--fail); }
+.sha { font-size: 11px; word-break: break-all; }
+.badge.success { background: var(--ok-bg); color: var(--ok); }

@@ -98,6 +98,30 @@ CREATE TABLE IF NOT EXISTS public.run_events (
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON public.run_events(run_id);
 
+-- ---------------------------------------------------------------------------
+-- 封存核账包：一个成功批次最多对应一份有效 ZIP（run_id 唯一约束）
+-- 状态机: sealing -> sealed | failed
+--   sealing 为“写盘+登记”中间态；进程中断后由 recover_archives_on_startup
+--   回收为 failed（ZIP 是确定性重建的，重试会得到字节一致的新包）。
+-- 只有 status='sealed' 且文件 sha256 与登记值相符时才允许下载/展示成功。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.run_archives (
+    id             SERIAL PRIMARY KEY,
+    run_id         INTEGER NOT NULL UNIQUE REFERENCES public.runs(id) ON DELETE CASCADE,
+    status         TEXT NOT NULL DEFAULT 'sealing'
+                   CHECK (status IN ('sealing','sealed','failed')),
+    file_path      TEXT,                       -- 共享卷内的 ZIP 绝对路径
+    file_name      TEXT,                       -- 对外下载文件名
+    file_size      BIGINT,
+    file_sha256    TEXT,                       -- 整个 ZIP 字节流的 SHA-256
+    row_counts     JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 每个 CSV 的行数
+    manifest       JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 包摘要（含逐文件清单）
+    error          TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_run_archives_status ON public.run_archives(status);
+
 -- 3) 权限 -------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO model_runner;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO model_runner;

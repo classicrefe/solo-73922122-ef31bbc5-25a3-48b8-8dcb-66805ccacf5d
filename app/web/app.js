@@ -214,7 +214,7 @@ async function loadRuns() {
     }
     wrap.innerHTML = runs.map((r) => `
       <div class="card">
-        <h3>试跑 #${r.id} ${STATUS_BADGE(r.status)}</h3>
+        <h3>试跑 #${r.id} ${STATUS_BADGE(r.status)} ${r.archive_status ? ARCHIVE_BADGE(r.archive_status) : ""}</h3>
         <div class="meta">
           <span>快照: <code>${esc(r.snapshot_schema || "-")}</code></span>
           <span>源数据版本: ${r.source_version}</span>
@@ -226,16 +226,62 @@ async function loadRuns() {
         <div class="row-actions">
           <button onclick='openRunDetail(${r.id})'>查看详情/失败原因</button>
           ${r.status === "failed" ? `<button class="primary" onclick='retryRun(${r.id})'>重试失败节点（沿用本次快照）</button>` : ""}
+          ${renderArchiveActions(r)}
         </div>
       </div>`).join("");
 
-    const active = runs.some((r) => ["initializing", "running"].includes(r.status));
+    const active = runs.some((r) =>
+      ["initializing", "running"].includes(r.status) || r.archive_status === "sealing");
     $("#btn-start-run").disabled = active;
     schedulePoll(active);
   } catch (e) {
     wrap.innerHTML = `<p class="error-msg">${esc(e.message)}</p>`;
   }
 }
+
+/* 封存核账包：仅成功且含 daily_net_sales 净额结果的批次可封存 */
+const ARCHIVE_BADGE = (s) => {
+  const map = { sealed: ["success", "已封存"], sealing: ["running", "封存中…"], failed: ["failed", "封存失败"] };
+  const [cls, text] = map[s] || ["pending", s];
+  return `<span class="badge ${cls}">📦 ${esc(text)}</span>`;
+};
+
+function renderArchiveActions(r) {
+  const sealable = r.status === "succeeded" && r.has_net_sales;
+  if (r.archive_status === "sealed") {
+    return `<button class="primary" onclick='downloadArchive(${r.id})'>下载核账包（${esc(r.archive_file_name || "")}）</button>`;
+  }
+  if (r.archive_status === "sealing") {
+    return `<button disabled>封存中…</button>`;
+  }
+  if (r.archive_status === "failed") {
+    return sealable
+      ? `<button class="primary" onclick='sealArchive(${r.id})'>重新封存核账包</button>`
+      : "";
+  }
+  return sealable
+    ? `<button class="primary" onclick='sealArchive(${r.id})'>封存核账包（财务离线核账）</button>`
+    : "";
+}
+
+window.sealArchive = async function (id) {
+  const btn = document.activeElement;
+  if (btn) { btn.disabled = true; btn.textContent = "封存中…"; }
+  try {
+    const a = await api(`/api/runs/${id}/archive`, { method: "POST" });
+    toast(`试跑 #${id} 核账包已封存：${a.file_name}（${a.file_size} 字节）`);
+    loadRuns();
+    openRunDetail(id);
+  } catch (e) {
+    toast(e.message, true);
+    loadRuns();
+  }
+};
+
+window.downloadArchive = function (id) {
+  // 直接走浏览器下载；服务端会先校验 SHA-256，不完整则拒绝
+  window.location.href = `/api/runs/${id}/archive/download`;
+};
 
 function schedulePoll(active) {
   clearInterval(pollTimer);
@@ -300,12 +346,46 @@ window.openRunDetail = async function (id) {
       ${d.events.map((e) => `
         <div class="event ${esc(e.event_type)}"><strong>${esc(e.event_type)}</strong>
           ${esc(e.created_at)} — ${esc(e.message || "")}</div>`).join("")}
+      ${renderArchivePanel(d)}
     `;
     $("#run-dialog").showModal();
   } catch (e) {
     toast(e.message, true);
   }
 };
+
+function renderArchivePanel(d) {
+  const a = d.archive;
+  if (!a) {
+    return `<h4>核账包</h4><p class="hint">尚未封存。</p>`;
+  }
+  const head = `<h4>核账包 ${ARCHIVE_BADGE(a.status)}</h4>`;
+  if (a.status === "sealed") {
+    const files = (a.manifest && a.manifest.files) || [];
+    return `
+      ${head}
+      <div class="meta">
+        <span>文件: <code>${esc(a.file_name)}</code></span>
+        <span>大小: ${a.file_size} 字节</span>
+        <span>SHA-256: <code class="sha">${esc(a.file_sha256)}</code></span>
+      </div>
+      <div class="scroll"><table><thead><tr><th>包内文件</th><th>行数</th><th>大小(字节)</th><th>SHA-256</th></tr></thead>
+      <tbody>${files.map((f) => `
+        <tr><td><code>${esc(f.path)}</code></td>
+            <td>${f.rows ?? "—"}</td>
+            <td>${f.size_bytes}</td>
+            <td><code class="sha">${esc(f.sha256)}</code></td></tr>`).join("")}
+      </tbody></table></div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="primary" onclick='downloadArchive(${d.run.id})'>下载核账包 ZIP</button>
+      </div>`;
+  }
+  if (a.status === "sealing") {
+    return `${head}<p class="hint">封存进行中（若服务中断，重启后可重新封存）。</p>`;
+  }
+  return `${head}<p class="error-msg">${esc(a.error || "封存失败，可重新封存")}</p>
+    <div class="row-actions"><button class="primary" onclick='sealArchive(${d.run.id})'>重新封存</button></div>`;
+}
 
 window.openResult = async function (runId, nodeId) {
   try {

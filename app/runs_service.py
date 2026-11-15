@@ -139,10 +139,17 @@ def list_runs(limit: int = 20) -> list[dict]:
                    count(n.*) FILTER (WHERE n.status='failed') AS node_failed,
                    count(n.*) FILTER (WHERE n.status='blocked') AS node_blocked,
                    count(n.*) FILTER (WHERE n.status='running') AS node_running,
-                   count(n.*) FILTER (WHERE n.status='pending') AS node_pending
+                   count(n.*) FILTER (WHERE n.status='pending') AS node_pending,
+                   bool_or(n.status='succeeded' AND n.model_name='daily_net_sales')
+                       AS has_net_sales,
+                   a.status AS archive_status,
+                   a.file_name AS archive_file_name,
+                   a.file_sha256 AS archive_sha256
             FROM public.runs r
             LEFT JOIN public.run_nodes n ON n.run_id = r.id
-            GROUP BY r.id ORDER BY r.id DESC LIMIT %s
+            LEFT JOIN public.run_archives a ON a.run_id = r.id
+            GROUP BY r.id, a.status, a.file_name, a.file_sha256
+            ORDER BY r.id DESC LIMIT %s
             """,
             (max(1, min(limit, 100)),),
         )
@@ -174,6 +181,13 @@ def get_run_detail(run_id: int) -> dict:
             "FROM public.run_events WHERE run_id=%s ORDER BY id",
             (run_id,),
         )
+        archive = dbmod.fetch_one(
+            conn,
+            "SELECT id, run_id, status, file_path, file_name, file_size, "
+            "file_sha256, row_counts, manifest, error, created_at, updated_at "
+            "FROM public.run_archives WHERE run_id=%s",
+            (run_id,),
+        )
     run_d = dict(run)
     for k in ("created_at", "started_at", "finished_at"):
         if run_d.get(k):
@@ -191,7 +205,14 @@ def get_run_detail(run_id: int) -> dict:
         d = dict(e)
         d["created_at"] = d["created_at"].isoformat()
         event_out.append(d)
-    return {"run": run_d, "nodes": node_out, "events": event_out}
+    archive_out = None
+    if archive:
+        archive_out = dict(archive)
+        for k in ("created_at", "updated_at"):
+            if archive_out.get(k):
+                archive_out[k] = archive_out[k].isoformat()
+    return {"run": run_d, "nodes": node_out, "events": event_out,
+            "archive": archive_out}
 
 
 def get_node_result(run_id: int, node_id: int, limit: int = 200) -> dict:

@@ -26,9 +26,34 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/tryout
       MAX_WORKERS: "4"
       STATEMENT_TIMEOUT_MS: "30000"
+      # 核账 ZIP 落在持久共享卷；两个 Web 实例挂载同一卷保证同批次只出一份包
+      ARCHIVE_DIR: /data/archives
     ports:
       - "8000:8000"
+    volumes:
+      - archives:/data/archives
+    restart: unless-stopped
+
+  # 可选的第二个 Web 实例，用于验证“两实例同时封存同批次只得到同一份包”。
+  # 默认不启动；需要时执行： docker compose --profile ha up
+  # 然后访问 http://localhost:8001 ，与 8000 共用同一数据库与归档共享卷。
+  api2:
+    profiles: ["ha"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/tryout
+      MAX_WORKERS: "4"
+      STATEMENT_TIMEOUT_MS: "30000"
+      ARCHIVE_DIR: /data/archives
+    ports:
+      - "8001:8000"
+    volumes:
+      - archives:/data/archives
     restart: unless-stopped
 
 volumes:
   pgdata:
+  archives:

@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import runs_service, scheduler, services
+from . import archives, runs_service, scheduler, services
 from .config import SOURCE_TABLES
 
 logging.basicConfig(
@@ -30,6 +30,10 @@ async def lifespan(app: FastAPI):
     recovered = scheduler.recover_on_startup()
     if recovered:
         log.info("重启恢复，续跑试跑: %s", recovered)
+    # 回收中断的封存中间态（sealing -> failed，可重试），并确保共享卷目录存在
+    stale_archives = archives.recover_archives_on_startup()
+    if stale_archives:
+        log.info("重启恢复，回收中断封存的批次: %s", stale_archives)
     yield
 
 
@@ -177,6 +181,49 @@ def api_node_result(run_id: int, node_id: int):
         return runs_service.get_node_result(run_id, node_id)
     except runs_service.UploadError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 封存核账包（财务离线核账）
+# ---------------------------------------------------------------------------
+@app.post("/api/runs/{run_id}/archive", status_code=200)
+def api_seal_archive(run_id: int):
+    """封存核账包。幂等：同批次重复/并发请求只得到同一份有效包。"""
+    try:
+        return archives.seal_run_archive(run_id)
+    except archives.ArchiveValidationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except archives.ArchiveError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/runs/{run_id}/archive")
+def api_get_archive(run_id: int):
+    info = archives.get_archive(run_id)
+    if info is None:
+        # 未封存也返回 404，前端据此显示“未封存”
+        raise HTTPException(404, f"试跑 #{run_id} 尚无封存记录")
+    return info
+
+
+@app.get("/api/archives")
+def api_list_archives():
+    return archives.list_archives()
+
+
+@app.get("/api/runs/{run_id}/archive/download")
+def api_download_archive(run_id: int):
+    try:
+        info, path = archives.open_verified_archive(run_id)
+    except archives.ArchiveError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except archives.ArchiveIntegrityError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=info["file_name"],
+    )
 
 
 @app.get("/api/health")

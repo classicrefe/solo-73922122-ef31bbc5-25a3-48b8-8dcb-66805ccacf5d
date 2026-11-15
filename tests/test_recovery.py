@@ -17,6 +17,7 @@ def clean_runs():
             if schema:
                 cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         cur.execute("DELETE FROM public.run_events")
+        cur.execute("DELETE FROM public.run_archives")
         cur.execute("DELETE FROM public.run_nodes")
         cur.execute("DELETE FROM public.runs")
         cur.execute("DELETE FROM public.models")

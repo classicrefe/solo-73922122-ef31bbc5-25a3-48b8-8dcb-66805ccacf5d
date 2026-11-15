@@ -1,9 +1,16 @@
 """pytest 共享夹具：真实 PostgreSQL + FastAPI TestClient。"""
 import os
+import tempfile
 
 import psycopg2
 import pytest
 from fastapi.testclient import TestClient
+
+# 测试环境无 /data 写权限，启动恢复需要一个可写的核账目录；
+# 各用例再通过 monkeypatch 切换到自己的独立子目录。
+os.environ.setdefault(
+    "ARCHIVE_DIR", os.path.join(tempfile.gettempdir(), "tryout_test_archives")
+)
 
 SEED_SALES = [
     (1, "S01", "2026-11-10", 1200.00),
@@ -56,3 +63,15 @@ def client():
     from app.main import app
     with TestClient(app) as cl:
         yield cl
+
+
+@pytest.fixture(autouse=True)
+def _isolate_archive_dir(tmp_path, monkeypatch):
+    """每个测试使用独立的核账包目录，避免共享卷上的文件互相干扰。"""
+    from app import archives, config
+
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir()
+    monkeypatch.setattr(config, "ARCHIVE_DIR", str(archive_dir))
+    monkeypatch.setattr(archives, "ARCHIVE_DIR", str(archive_dir))
+    yield str(archive_dir)

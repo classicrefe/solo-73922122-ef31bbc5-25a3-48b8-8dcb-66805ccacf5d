@@ -31,6 +31,7 @@ def clean_runs():
         cur.execute("SELECT id, snapshot_schema FROM public.runs")
         rows = cur.fetchall()
         cur.execute("DELETE FROM public.run_events")
+        cur.execute("DELETE FROM public.run_archives")
         cur.execute("DELETE FROM public.run_nodes")
         cur.execute("DELETE FROM public.runs")
         for _, schema in rows:
